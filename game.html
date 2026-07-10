@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Кот УХ в магазине</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            overflow: hidden; 
+            background: #1a1a1a;
+            font-family: Arial, sans-serif;
+        }
+        #gameCanvas { 
+            display: block; 
+            width: 100vw; 
+            height: 100vh; 
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 16px;
+            z-index: 100;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 30px;
+            border-radius: 15px;
+            font-size: 20px;
+            z-index: 1000;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 100;
+        }
+        #mobileControls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            display: none;
+            z-index: 100;
+        }
+        .d-pad {
+            display: grid;
+            grid-template-columns: repeat(3, 60px);
+            grid-template-rows: repeat(3, 60px);
+            gap: 5px;
+        }
+        .d-pad button {
+            background: rgba(255, 255, 255, 0.3);
+            border: 2px solid white;
+            border-radius: 10px;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .d-pad button:active {
+            background: rgba(255, 255, 255, 0.6);
+        }
+        .up { grid-column: 2; grid-row: 1; }
+        .left { grid-column: 1; grid-row: 2; }
+        .right { grid-column: 3; grid-row: 2; }
+        .down { grid-column: 2; grid-row: 3; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="loading">🔄 Загрузка...</div>
+    
+    <div id="ui">
+        <div>🪙 Монетки: <span id="coins">0</span></div>
+        <div>🐱 Кот УХ в магазине</div>
+    </div>
+    
+    <div id="controls">
+        <div>WASD или стрелки — движение</div>
+        <div>На телефоне — кнопки слева</div>
+    </div>
+    
+    <div id="mobileControls">
+        <div class="d-pad">
+            <button class="up" ontouchstart="moveUp(true)" ontouchend="moveUp(false)">↑</button>
+            <button class="left" ontouchstart="moveLeft(true)" ontouchend="moveLeft(false)">←</button>
+            <button class="right" ontouchstart="moveRight(true)" ontouchend="moveRight(false)">→</button>
+            <button class="down" ontouchstart="moveDown(true)" ontouchend="moveDown(false)">↓</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <script>
+        // Настройки
+        const SHOP_WIDTH = 40;
+        const SHOP_DEPTH = 30;
+        const PLAYER_SPEED = 0.15;
+        const PLAYER_SIZE = 0.8;
+        
+        // Сцена
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        
+        // Камера (ортогональная, вид сверху-сбоку как на изометрии)
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumSize = 25;
+        const camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2,
+            frustumSize * aspect / 2,
+            frustumSize / 2,
+            frustumSize / -2,
+            0.1,
+            1000
+        );
+        camera.position.set(20, 20, 20);
+        camera.lookAt(0, 0, 0);
+        
+        // Рендерер
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        
+        // Освещение
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(15, 25, 15);
+        directionalLight.castShadow = true;
+        directionalLight.shadow.camera.left = -25;
+        directionalLight.shadow.camera.right = 25;
+        directionalLight.shadow.camera.top = 25;
+        directionalLight.shadow.camera.bottom = -25;
+        directionalLight.shadow.mapSize.width = 2048;
+        directionalLight.shadow.mapSize.height = 2048;
+        scene.add(directionalLight);
+        
+        // Пол магазина (текстура плитки)
+        const floorTexture = createCheckerTexture(0xE8E8E8, 0xD0D0D0, 64);
+        const floorMaterial = new THREE.MeshLambertMaterial({ map: floorTexture });
+        const floorGeometry = new THREE.PlaneGeometry(SHOP_WIDTH, SHOP_DEPTH);
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+        
+        // Создание текстуры шашечек
+        function createCheckerTexture(color1, color2, size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size * 2;
+            canvas.height = size * 2;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = '#' + color1.toString(16).padStart(6, '0');
+            ctx.fillRect(0, 0, size, size);
+            ctx.fillRect(size, size, size, size);
+            
+            ctx.fillStyle = '#' + color2.toString(16).padStart(6, '0');
+            ctx.fillRect(size, 0, size, size);
+            ctx.fillRect(0, size, size, size);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(SHOP_WIDTH / 2, SHOP_DEPTH / 2);
+            
+            return texture;
+        }
+        
+        // Стены магазина
+        const wallMaterial = new THREE.MeshLambertMaterial({ color: 0x666666 });
+        const wallHeight = 3;
+        const wallThickness = 0.5;
+        
+        function createWall(width, height, depth, x, y, z) {
+            const wall = new THREE.Mesh(
+                new THREE.BoxGeometry(width, height, depth),
+                wallMaterial
+            );
+            wall.position.set(x, y, z);
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            scene.add(wall);
+            return wall;
+        }
+        
+        // Стены
+        createWall(SHOP_WIDTH + wallThickness * 2, wallHeight, wallThickness, 
+            0, wallHeight / 2, -SHOP_DEPTH / 2 - wallThickness / 2);
+        createWall(SHOP_WIDTH + wallThickness * 2, wallHeight, wallThickness, 
+            0, wallHeight / 2, SHOP_DEPTH / 2 + wallThickness / 2);
+        createWall(wallThickness, wallHeight, SHOP_DEPTH, 
+            -SHOP_WIDTH / 2 - wallThickness / 2, wallHeight / 2, 0);
+        createWall(wallThickness, wallHeight, SHOP_DEPTH, 
+            SHOP_WIDTH / 2 + wallThickness / 2, wallHeight / 2, 0);
+        
+        // Объекты магазина
+        const obstacles = [];
+        
+        // Текстуры для объектов
+        const shelfTexture = createColorTexture(0x8B4513);
+        const freezerTexture = createColorTexture(0xADD8E6);
+        
+        function createColorTexture(color) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+            ctx.fillRect(0, 0, 64, 64);
+            return new THREE.CanvasTexture(canvas);
+        }
+        
+        function createShelf(x, z, width, depth, height = 1.8) {
+            const shelf = new THREE.Mesh(
+                new THREE.BoxGeometry(width, height, depth),
+                new THREE.MeshLambertMaterial({ map: shelfTexture })
+            );
+            shelf.position.set(x, height / 2, z);
+            shelf.castShadow = true;
+            shelf.receiveShadow = true;
+            scene.add(shelf);
+            obstacles.push({ x: x, z: z, width: width, depth: depth });
+            return shelf;
+        }
+        
+        function createFreezer(x, z, width, depth) {
+            const freezer = new THREE.Mesh(
+                new THREE.BoxGeometry(width, 1.2, depth),
+                new THREE.MeshLambertMaterial({ map: freezerTexture })
+            );
+            freezer.position.set(x, 0.6, z);
+            freezer.castShadow = true;
+            freezer.receiveShadow = true;
+            scene.add(freezer);
+            obstacles.push({ x: x, z: z, width: width, depth: depth });
+            return freezer;
+        }
+        
+        // Создаём расстановку как на референсе
+        // Полки с продуктами
+        createShelf(-12, -10, 6, 2.5);
+        createShelf(-4, -10, 6, 2.5);
+        createShelf(4, -10, 6, 2.5);
+        createShelf(12, -10, 6, 2.5);
+        
+        createShelf(-12, -3, 6, 2.5);
+        createShelf(-4, -3, 6, 2.5);
+        createShelf(4, -3, 6, 2.5);
+        createShelf(12, -3, 6, 2.5);
+        
+        createShelf(-12, 4, 6, 2.5);
+        createShelf(-4, 4, 6, 2.5);
+        createShelf(4, 4, 6, 2.5);
+        createShelf(12, 4, 6, 2.5);
+        
+        // Морозильники по углам
+        createFreezer(-16, -12, 4, 3);
+        createFreezer(-16, 12, 4, 3);
+        createFreezer(16, -12, 4, 3);
+        createFreezer(16, 12, 4, 3);
+        
+        // Кассы (входная зона)
+        createShelf(0, 13, 3, 1.5, 1);
+        
+        // Персонаж - 3D модель
+        let player = new THREE.Group();
+        let playerModel = null;
+        let mixer = null;
+        let walkAction = null;
+        let isWalking = false;
+        
+        // Временная заглушка (оранжевый цилиндр)
+        const tempGeometry = new THREE.CylinderGeometry(PLAYER_SIZE / 2, PLAYER_SIZE / 2, 1.5, 8);
+        const tempMaterial = new THREE.MeshLambertMaterial({ color: 0xFF8C00 });
+        const tempMesh = new THREE.Mesh(tempGeometry, tempMaterial);
+        tempMesh.position.set(0, 0.75, 0);
+        tempMesh.castShadow = true;
+        player.add(tempMesh);
+        
+        player.position.set(0, 0, 0);
+        scene.add(player);
+        
+        // Загрузка GLB модели
+        function loadGLBModel(url) {
+            const loader = new THREE.GLTFLoader();
+            
+            console.log('🔄 Загрузка модели:', url);
+            
+            loader.load(
+                url,
+                function(gltf) {
+                    console.log('✅ Модель загружена!');
+                    playerModel = gltf.scene;
+                    
+                    // Настройка масштаба
+                    playerModel.scale.set(0.5, 0.5, 0.5);
+                    playerModel.position.set(0, 0, 0);
+                    
+                    // Поворот для изометрии
+                    playerModel.rotation.y = Math.PI / 4;
+                    
+                    // Тени
+                    playerModel.traverse((object) => {
+                        if (object.isMesh) {
+                            object.castShadow = true;
+                            object.receiveShadow = true;
+                        }
+                    });
+                    
+                    // Анимации
+                    if (gltf.animations && gltf.animations.length > 0) {
+                        console.log('Найдено анимаций:', gltf.animations.length);
+                        gltf.animations.forEach((clip, index) => {
+                            console.log('Анимация', index, ':', clip.name);
+                        });
+                        
+                        mixer = new THREE.AnimationMixer(playerModel);
+                        
+                        // Ищем анимацию ходьбы
+                        const walkAnimation = gltf.animations.find(anim => 
+                            anim.name.toLowerCase().includes('walk') || 
+                            anim.name.toLowerCase().includes('run') ||
+                            anim.name.toLowerCase().includes('idle')
+                        );
+                        
+                        if (walkAnimation) {
+                            walkAction = mixer.clipAction(walkAnimation);
+                            walkAction.enabled = true;
+                        } else if (gltf.animations.length > 0) {
+                            walkAction = mixer.clipAction(gltf.animations[0]);
+                        }
+                    }
+                    
+                    // Добавляем модель
+                    player.add(playerModel);
+                    tempMesh.visible = false;
+                    
+                    console.log('✅ 3D модель кота добавлена!');
+                    document.getElementById('loading').style.display = 'none';
+                    
+                },
+                function(xhr) {
+                    // Прогресс загрузки
+                    if (xhr.lengthComputable) {
+                        const percentComplete = (xhr.loaded / xhr.total) * 100;
+                        console.log('Загрузка:', percentComplete.toFixed(2) + '%');
+                    }
+                },
+                function(error) {
+                    console.error('❌ Ошибка загрузки модели:', error);
+                    document.getElementById('loading').textContent = '❌ Модель не загрузилась, используем заглушку';
+                    setTimeout(() => {
+                        document.getElementById('loading').style.display = 'none';
+                    }, 3000);
+                }
+            );
+        }
+        
+        // Загружаем модель
+        loadGLBModel('3dmodelCat.glb');
+        
+        // Управление
+        const keys = {};
+        let moveUpFlag = false, moveDownFlag = false, moveLeftFlag = false, moveRightFlag = false;
+        
+        document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+        
+        function moveUp(state) { moveUpFlag = state; }
+        function moveDown(state) { moveDownFlag = state; }
+        function moveLeft(state) { moveLeftFlag = state; }
+        function moveRight(state) { moveRightFlag = state; }
+        
+        // Проверка коллизий
+        function checkCollision(newX, newZ) {
+            // Границы магазина
+            if (newX < -SHOP_WIDTH / 2 + PLAYER_SIZE || newX > SHOP_WIDTH / 2 - PLAYER_SIZE) return true;
+            if (newZ < -SHOP_DEPTH / 2 + PLAYER_SIZE || newZ > SHOP_DEPTH / 2 - PLAYER_SIZE) return true;
+            
+            // Объекты
+            for (let obs of obstacles) {
+                const halfW = obs.width / 2 + PLAYER_SIZE / 2;
+                const halfD = obs.depth / 2 + PLAYER_SIZE / 2;
+                if (newX > obs.x - halfW && newX < obs.x + halfW &&
+                    newZ > obs.z - halfD && newZ < obs.z + halfD) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // Игровой цикл
+        let lastTime = 0;
+        function animate(time) {
+            requestAnimationFrame(animate);
+            
+            const delta = time - lastTime;
+            lastTime = time;
+            
+            // Свободное движение во все стороны
+            let dx = 0, dz = 0;
+            if (keys['w'] || keys['arrowup'] || moveUpFlag) dz -= PLAYER_SPEED;
+            if (keys['s'] || keys['arrowdown'] || moveDownFlag) dz += PLAYER_SPEED;
+            if (keys['a'] || keys['arrowleft'] || moveLeftFlag) dx -= PLAYER_SPEED;
+            if (keys['d'] || keys['arrowright'] || moveRightFlag) dx += PLAYER_SPEED;
+            
+            // Нормализация диагонали
+            if (dx !== 0 && dz !== 0) {
+                const length = Math.sqrt(dx * dx + dz * dz);
+                dx = (dx / length) * PLAYER_SPEED;
+                dz = (dz / length) * PLAYER_SPEED;
+            }
+            
+            // Проверка и применение движения
+            const newX = player.position.x + dx;
+            const newZ = player.position.z + dz;
+            
+            let canMoveX = !checkCollision(newX, player.position.z);
+            let canMoveZ = !checkCollision(player.position.x, newZ);
+            
+            if (canMoveX) {
+                player.position.x = newX;
+            }
+            if (canMoveZ) {
+                player.position.z = newZ;
+            }
+            
+            // Поворот персонажа в направлении движения (плавный)
+            if (dx !== 0 || dz !== 0) {
+                const targetAngle = Math.atan2(dx, dz);
+                const currentAngle = player.rotation.y;
+                let angleDiff = targetAngle - currentAngle;
+                
+                // Нормализация угла
+                while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+                
+                // Плавный поворот
+                player.rotation.y += angleDiff * 0.15;
+                
+                // Анимация ходьбы
+                if (mixer && walkAction) {
+                    if (!isWalking) {
+                        walkAction.play();
+                        isWalking = true;
+                    }
+                    mixer.update(delta * 0.001);
+                }
+            } else {
+                // Остановка анимации
+                if (walkAction && isWalking) {
+                    walkAction.stop();
+                    isWalking = false;
+                }
+                if (mixer) {
+                    mixer.update(delta * 0.001);
+                }
+            }
+            
+            // Камера плавно следует за игроком
+            const targetCamX = player.position.x + 20;
+            const targetCamZ = player.position.z + 20;
+            camera.position.x += (targetCamX - camera.position.x) * 0.1;
+            camera.position.z += (targetCamZ - camera.position.z) * 0.1;
+            camera.lookAt(player.position.x, 0, player.position.z);
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Адаптация размера окна
+        window.addEventListener('resize', () => {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.left = frustumSize * aspect / -2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = frustumSize / -2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // Показ мобильных кнопок на телефоне
+        if ('ontouchstart' in window) {
+            document.getElementById('mobileControls').style.display = 'block';
+        }
+        
+        // Запуск
+        animate(0);
+    </script>
+</body>
+</html>
