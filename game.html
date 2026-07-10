@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Кот УХ в магазине</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #1a1a1a; font-family: Arial, sans-serif; }
+        #gameCanvas { display: block; width: 100vw; height: 100vh; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 16px;
+            z-index: 100;
+        }
+        #healthBar {
+            width: 200px;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        #healthFill {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, #ff0000, #ff4444);
+            transition: width 0.3s;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 100;
+        }
+        #mobileControls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            display: none;
+            z-index: 100;
+        }
+        .d-pad {
+            display: grid;
+            grid-template-columns: repeat(3, 60px);
+            grid-template-rows: repeat(3, 60px);
+            gap: 5px;
+        }
+        .d-pad button {
+            background: rgba(255, 255, 255, 0.3);
+            border: 2px solid white;
+            border-radius: 10px;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .d-pad button:active { background: rgba(255, 255, 255, 0.6); }
+        .up { grid-column: 2; grid-row: 1; }
+        .left { grid-column: 1; grid-row: 2; }
+        .right { grid-column: 3; grid-row: 2; }
+        .down { grid-column: 2; grid-row: 3; }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 40px;
+            border-radius: 15px;
+            font-size: 32px;
+            z-index: 1000;
+            display: none;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui">
+        <div>🪙 Монетки: <span id="coins">0</span></div>
+        <div>🐱 Кот УХ в магазине</div>
+        <div style="margin-top: 10px;">❤️ Здоровье:</div>
+        <div id="healthBar"><div id="healthFill"></div></div>
+    </div>
+    <div id="controls">
+        <div>WASD или стрелки — движение</div>
+        <div>На телефоне — кнопки слева</div>
+        <div>⚠️ Избегай врага с ножом!</div>
+        <div>🎯 Заманивай его на ловушки!</div>
+    </div>
+    <div id="mobileControls">
+        <div class="d-pad">
+            <button class="up" ontouchstart="moveUp(true)" ontouchend="moveUp(false)">↑</button>
+            <button class="left" ontouchstart="moveLeft(true)" ontouchend="moveLeft(false)">←</button>
+            <button class="right" ontouchstart="moveRight(true)" ontouchend="moveRight(false)">→</button>
+            <button class="down" ontouchstart="moveDown(true)" ontouchend="moveDown(false)">↓</button>
+        </div>
+    </div>
+    <div id="gameOver">
+        <div>💀 GAME OVER 💀</div>
+        <div style="font-size: 18px; margin-top: 20px;">Обнови страницу чтобы начать заново</div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script>
+        const SHOP_WIDTH = 40;
+        const SHOP_DEPTH = 30;
+        const PLAYER_SPEED = 0.075; // В 2 раза медленнее
+        const ENEMY_SPEED = 0.06;
+        const PLAYER_SIZE = 0.8;
+        
+        let playerHealth = 100;
+        let coins = 0;
+        let gameOver = false;
+        
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 30, 60);
+        
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumSize = 25;
+        const camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2,
+            frustumSize * aspect / 2,
+            frustumSize / 2,
+            frustumSize / -2,
+            0.1,
+            1000
+        );
+        camera.position.set(20, 20, 20);
+        camera.lookAt(0, 0, 0);
+        
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(15, 25, 15);
+        directionalLight.castShadow = true;
+        scene.add(directionalLight);
+        
+        // Текстуры
+        function createCheckerTexture(color1, color2, size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size * 2;
+            canvas.height = size * 2;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#' + color1.toString(16).padStart(6, '0');
+            ctx.fillRect(0, 0, size, size);
+            ctx.fillRect(size, size, size, size);
+            ctx.fillStyle = '#' + color2.toString(16).padStart(6, '0');
+            ctx.fillRect(size, 0, size, size);
+            ctx.fillRect(0, size, size, size);
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(SHOP_WIDTH / 2, SHOP_DEPTH / 2);
+            return texture;
+        }
+        
+        function createWoodTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(0, 0, 128, 128);
+            for (let i = 0; i < 20; i++) {
+                ctx.strokeStyle = '#654321';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, i * 6 + Math.random() * 4);
+                ctx.lineTo(128, i * 6 + Math.random() * 4);
+                ctx.stroke();
+            }
+            return new THREE.CanvasTexture(canvas);
+        }
+        
+        function createMetalTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createLinearGradient(0, 0, 128, 128);
+            gradient.addColorStop(0, '#C0C0C0');
+            gradient.addColorStop(0.5, '#E8E8E8');
+            gradient.addColorStop(1, '#A0A0A0');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 128, 128);
+            return new THREE.CanvasTexture(canvas);
+        }
+        
+        // Пол
+        const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(SHOP_WIDTH, SHOP_DEPTH),
+            new THREE.MeshLambertMaterial({ map: createCheckerTexture(0xE8E8E8, 0xD0D0D0, 64) })
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+        
+        // Стены
+        const wallMaterial = new THREE.MeshLambertMaterial({ color: 0x666666 });
+        const wallHeight = 3;
+        const wallThickness = 0.5;
+        
+        function createWall(width, height, depth, x, y, z) {
+            const wall = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), wallMaterial);
+            wall.position.set(x, y, z);
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            scene.add(wall);
+        }
+        
+        createWall(SHOP_WIDTH + wallThickness * 2, wallHeight, wallThickness, 0, wallHeight / 2, -SHOP_DEPTH / 2 - wallThickness / 2);
+        createWall(SHOP_WIDTH + wallThickness * 2, wallHeight, wallThickness, 0, wallHeight / 2, SHOP_DEPTH / 2 + wallThickness / 2);
+        createWall(wallThickness, wallHeight, SHOP_DEPTH, -SHOP_WIDTH / 2 - wallThickness / 2, wallHeight / 2, 0);
+        createWall(wallThickness, wallHeight, SHOP_DEPTH, SHOP_WIDTH / 2 + wallThickness / 2, wallHeight / 2, 0);
+        
+        // Объекты
+        const obstacles = [];
+        const woodTexture = createWoodTexture();
+        const metalTexture = createMetalTexture();
+        
+        function createShelf(x, z, width, depth, height = 1.8) {
+            const shelf = new THREE.Mesh(
+                new THREE.BoxGeometry(width, height, depth),
+                new THREE.MeshLambertMaterial({ map: woodTexture })
+            );
+            shelf.position.set(x, height / 2, z);
+            shelf.castShadow = true;
+            shelf.receiveShadow = true;
+            scene.add(shelf);
+            obstacles.push({ x, z, width, depth });
+        }
+        
+        function createFreezer(x, z, width, depth) {
+            const freezer = new THREE.Mesh(
+                new THREE.BoxGeometry(width, 1.2, depth),
+                new THREE.MeshLambertMaterial({ map: metalTexture, color: 0xADD8E6 })
+            );
+            freezer.position.set(x, 0.6, z);
+            freezer.castShadow = true;
+            freezer.receiveShadow = true;
+            scene.add(freezer);
+            obstacles.push({ x, z, width, depth });
+        }
+        
+        for (let x = -12; x <= 12; x += 8) {
+            createShelf(x, -10, 6, 2.5);
+            createShelf(x, -3, 6, 2.5);
+            createShelf(x, 4, 6, 2.5);
+        }
+        createFreezer(-16, -12, 4, 3);
+        createFreezer(-16, 12, 4, 3);
+        createFreezer(16, -12, 4, 3);
+        createFreezer(16, 12, 4, 3);
+        createShelf(0, 13, 3, 1.5, 1);
+        
+        // ===== РЕАЛИСТИЧНЫЙ 3D КОТ =====
+        const player = new THREE.Group();
+        
+        function createRealisticCat() {
+            const catGroup = new THREE.Group();
+            const orangeMat = new THREE.MeshLambertMaterial({ color: 0xFF8C00 });
+            const whiteMat = new THREE.MeshLambertMaterial({ color: 0xFFFFFF });
+            const blackMat = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            const pinkMat = new THREE.MeshLambertMaterial({ color: 0xFFB6C1 });
+            
+            // Тело (овал)
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 16), orangeMat);
+            body.scale.set(1, 0.8, 1.3);
+            body.position.y = 0.7;
+            body.castShadow = true;
+            catGroup.add(body);
+            
+            // Грудь (белая)
+            const chest = new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 16), whiteMat);
+            chest.scale.set(0.9, 0.8, 1);
+            chest.position.set(0, 0.6, 0.3);
+            catGroup.add(chest);
+            
+            // Голова
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 16), orangeMat);
+            head.position.set(0, 1.3, 0.6);
+            head.castShadow = true;
+            catGroup.add(head);
+            
+            // Морда
+            const snout = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 16), whiteMat);
+            snout.position.set(0, 1.2, 0.95);
+            catGroup.add(snout);
+            
+            // Нос
+            const nose = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), pinkMat);
+            nose.position.set(0, 1.25, 1.05);
+            catGroup.add(nose);
+            
+            // Уши
+            const earGeo = new THREE.ConeGeometry(0.12, 0.25, 4);
+            const ear1 = new THREE.Mesh(earGeo, orangeMat);
+            ear1.position.set(-0.2, 1.7, 0.6);
+            catGroup.add(ear1);
+            const ear2 = ear1.clone();
+            ear2.position.set(0.2, 1.7, 0.6);
+            catGroup.add(ear2);
+            
+            // Внутренняя часть ушей
+            const innerEarGeo = new THREE.ConeGeometry(0.06, 0.15, 4);
+            const innerEar1 = new THREE.Mesh(innerEarGeo, pinkMat);
+            innerEar1.position.set(-0.2, 1.68, 0.62);
+            catGroup.add(innerEar1);
+            const innerEar2 = innerEar1.clone();
+            innerEar2.position.set(0.2, 1.68, 0.62);
+            catGroup.add(innerEar2);
+            
+            // Глаза
+            const eyeGeo = new THREE.SphereGeometry(0.1, 16, 16);
+            const eye1 = new THREE.Mesh(eyeGeo, whiteMat);
+            eye1.position.set(-0.15, 1.35, 0.95);
+            catGroup.add(eye1);
+            const eye2 = eye1.clone();
+            eye2.position.set(0.15, 1.35, 0.95);
+            catGroup.add(eye2);
+            
+            // Зрачки
+            const pupilGeo = new THREE.SphereGeometry(0.05, 8, 8);
+            const pupil1 = new THREE.Mesh(pupilGeo, blackMat);
+            pupil1.position.set(-0.15, 1.35, 1.02);
+            catGroup.add(pupil1);
+            const pupil2 = pupil1.clone();
+            pupil2.position.set(0.15, 1.35, 1.02);
+            catGroup.add(pupil2);
+            
+            // Хвост
+            const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.05, 1), orangeMat);
+            tail.position.set(0, 0.9, -0.9);
+            tail.rotation.x = -0.8;
+            tail.castShadow = true;
+            catGroup.add(tail);
+            
+            // Лапы
+            const legGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.5, 8);
+            const legPositions = [[-0.3, 0.3, 0.5], [0.3, 0.3, 0.5], [-0.3, 0.3, -0.5], [0.3, 0.3, -0.5]];
+            legPositions.forEach(pos => {
+                const leg = new THREE.Mesh(legGeo, orangeMat);
+                leg.position.set(...pos);
+                leg.castShadow = true;
+                catGroup.add(leg);
+                
+                // Лапки
+                const paw = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), whiteMat);
+                paw.position.set(pos[0], 0.1, pos[2]);
+                catGroup.add(paw);
+            });
+            
+            return catGroup;
+        }
+        
+        const cat3D = createRealisticCat();
+        player.add(cat3D);
+        player.position.set(0, 0, 0);
+        scene.add(player);
+        
+        // ===== ВРАГ С НОЖОМ =====
+        const enemy = new THREE.Group();
+        let enemyHealth = 100;
+        
+        function createEnemy() {
+            const enemyGroup = new THREE.Group();
+            const darkMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            const skinMat = new THREE.MeshLambertMaterial({ color: 0xFFDBAC });
+            const redMat = new THREE.MeshLambertMaterial({ color: 0x8B0000 });
+            const silverMat = new THREE.MeshLambertMaterial({ color: 0xC0C0C0 });
+            
+            // Тело
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.6), darkMat);
+            body.position.y = 1;
+            body.castShadow = true;
+            enemyGroup.add(body);
+            
+            // Голова
+            const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 16), skinMat);
+            head.position.set(0, 1.9, 0);
+            head.castShadow = true;
+            enemyGroup.add(head);
+            
+            // Глаза (злые)
+            const eyeGeo = new THREE.SphereGeometry(0.06, 8, 8);
+            const eye1 = new THREE.Mesh(eyeGeo, redMat);
+            eye1.position.set(-0.12, 1.95, 0.28);
+            enemyGroup.add(eye1);
+            const eye2 = eye1.clone();
+            eye2.position.set(0.12, 1.95, 0.28);
+            enemyGroup.add(eye2);
+            
+            // Руки
+            const armGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.8, 8);
+            const arm1 = new THREE.Mesh(armGeo, darkMat);
+            arm1.position.set(-0.5, 1.2, 0);
+            arm1.rotation.z = 0.3;
+            enemyGroup.add(arm1);
+            const arm2 = arm1.clone();
+            arm2.position.set(0.5, 1.2, 0);
+            arm2.rotation.z = -0.3;
+            enemyGroup.add(arm2);
+            
+            // Нож в правой руке
+            const knifeBlade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.5, 0.02), silverMat);
+            knifeBlade.position.set(0.6, 1.5, 0.2);
+            knifeBlade.rotation.z = -0.5;
+            enemyGroup.add(knifeBlade);
+            
+            const knifeHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.2, 8), new THREE.MeshLambertMaterial({ color: 0x4A2511 }));
+            knifeHandle.position.set(0.55, 1.2, 0.2);
+            knifeHandle.rotation.z = -0.5;
+            enemyGroup.add(knifeHandle);
+            
+            // Ноги
+            const legGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.8, 8);
+            const leg1 = new THREE.Mesh(legGeo, darkMat);
+            leg1.position.set(-0.2, 0.4, 0);
+            enemyGroup.add(leg1);
+            const leg2 = leg1.clone();
+            leg2.position.set(0.2, 0.4, 0);
+            enemyGroup.add(leg2);
+            
+            return enemyGroup;
+        }
+        
+        const enemyModel = createEnemy();
+        enemy.add(enemyModel);
+        enemy.position.set(-15, 0, -10);
+        scene.add(enemy);
+        
+        // ===== НАЖИМНЫЕ ПЛИТЫ И ЛОВУШКИ =====
+        const traps = [];
+        const arrows = [];
+        const bloodParticles = [];
+        
+        function createPressurePlate(x, z, type) {
+            const plateGroup = new THREE.Group();
+            
+            // Основание плиты
+            const base = new THREE.Mesh(
+                new THREE.BoxGeometry(1.5, 0.1, 1.5),
+                new THREE.MeshLambertMaterial({ color: 0x8B4513 })
+            );
+            base.position.y = 0.05;
+            plateGroup.add(base);
+            
+            // Кнопка
+            const button = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.5, 0.5, 0.15, 16),
+                new THREE.MeshLambertMaterial({ color: type === 'arrow' ? 0xFF0000 : 0x444444 })
+            );
+            button.position.y = 0.15;
+            button.castShadow = true;
+            plateGroup.add(button);
+            
+            plateGroup.position.set(x, 0, z);
+            scene.add(plateGroup);
+            
+            traps.push({
+                x, z,
+                type,
+                activated: false,
+                cooldown: 0,
+                mesh: plateGroup,
+                button: button
+            });
+        }
+        
+        function createPit(x, z) {
+            const pit = new THREE.Mesh(
+                new THREE.BoxGeometry(2, 0.1, 2),
+                new THREE.MeshLambertMaterial({ color: 0x000000 })
+            );
+            pit.position.set(x, 0.01, z);
+            scene.add(pit);
+            
+            traps.push({
+                x, z,
+                type: 'pit',
+                activated: false,
+                cooldown: 0,
+                mesh: pit
+            });
+        }
+        
+        // Расставляем ловушки
+        createPressurePlate(-8, -6, 'arrow');
+        createPressurePlate(8, -6, 'arrow');
+        createPressurePlate(-8, 6, 'arrow');
+        createPressurePlate(8, 6, 'arrow');
+        createPit(0, -8);
+        createPit(0, 8);
+        createPit(-10, 0);
+        createPit(10, 0);
+        
+        // ===== СИСТЕМА КРОВИ =====
+        function createBloodSplash(position, amount = 10) {
+            for (let i = 0; i < amount; i++) {
+                const blood = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.08, 8, 8),
+                    new THREE.MeshLambertMaterial({ color: 0x8B0000 })
+                );
+                blood.position.copy(position);
+                blood.position.y += 1;
+                blood.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.3,
+                    Math.random() * 0.3,
+                    (Math.random() - 0.5) * 0.3
+                );
+                blood.life = 60;
+                scene.add(blood);
+                bloodParticles.push(blood);
+            }
+        }
+        
+        function createArrow(targetPos) {
+            const arrow = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.05, 0.05, 0.8, 8),
+                new THREE.MeshLambertMaterial({ color: 0x8B4513 })
+            );
+            arrow.position.set(targetPos.x, 5, targetPos.z);
+            arrow.target = targetPos.clone();
+            arrow.speed = 0.5;
+            scene.add(arrow);
+            arrows.push(arrow);
+        }
+        
+        // ===== УПРАВЛЕНИЕ =====
+        const keys = {};
+        let moveUpFlag = false, moveDownFlag = false, moveLeftFlag = false, moveRightFlag = false;
+        
+        document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+        
+        function moveUp(state) { moveUpFlag = state; }
+        function moveDown(state) { moveDownFlag = state; }
+        function moveLeft(state) { moveLeftFlag = state; }
+        function moveRight(state) { moveRightFlag = state; }
+        
+        function checkCollision(newX, newZ) {
+            if (newX < -SHOP_WIDTH / 2 + PLAYER_SIZE || newX > SHOP_WIDTH / 2 - PLAYER_SIZE) return true;
+            if (newZ < -SHOP_DEPTH / 2 + PLAYER_SIZE || newZ > SHOP_DEPTH / 2 - PLAYER_SIZE) return true;
+            for (let obs of obstacles) {
+                const halfW = obs.width / 2 + PLAYER_SIZE / 2;
+                const halfD = obs.depth / 2 + PLAYER_SIZE / 2;
+                if (newX > obs.x - halfW && newX < obs.x + halfW && newZ > obs.z - halfD && newZ < obs.z + halfD) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // ===== ИГРОВОЙ ЦИКЛ =====
+        let lastTime = 0;
+        let attackCooldown = 0;
+        
+        function animate(time) {
+            requestAnimationFrame(animate);
+            if (gameOver) return;
+            
+            const delta = time - lastTime;
+            lastTime = time;
+            
+            // Движение игрока
+            let dx = 0, dz = 0;
+            if (keys['w'] || keys['arrowup'] || moveUpFlag) dz -= PLAYER_SPEED;
+            if (keys['s'] || keys['arrowdown'] || moveDownFlag) dz += PLAYER_SPEED;
+            if (keys['a'] || keys['arrowleft'] || moveLeftFlag) dx -= PLAYER_SPEED;
+            if (keys['d'] || keys['arrowright'] || moveRightFlag) dx += PLAYER_SPEED;
+            
+            if (dx !== 0 && dz !== 0) {
+                const length = Math.sqrt(dx * dx + dz * dz);
+                dx = (dx / length) * PLAYER_SPEED;
+                dz = (dz / length) * PLAYER_SPEED;
+            }
+            
+            const newX = player.position.x + dx;
+            const newZ = player.position.z + dz;
+            
+            if (!checkCollision(newX, player.position.z)) player.position.x = newX;
+            if (!checkCollision(player.position.x, newZ)) player.position.z = newZ;
+            
+            if (dx !== 0 || dz !== 0) {
+                const targetAngle = Math.atan2(dx, dz);
+                player.rotation.y += (targetAngle - player.rotation.y) * 0.15;
+            }
+            
+            // Движение врага к игроку
+            const enemyDx = player.position.x - enemy.position.x;
+            const enemyDz = player.position.z - enemy.position.z;
+            const enemyDist = Math.sqrt(enemyDx * enemyDx + enemyDz * enemyDz);
+            
+            if (enemyDist > 1) {
+                enemy.position.x += (enemyDx / enemyDist) * ENEMY_SPEED;
+                enemy.position.z += (enemyDz / enemyDist) * ENEMY_SPEED;
+                enemy.rotation.y = Math.atan2(enemyDx, enemyDz);
+            }
+            
+            // Атака врага
+            if (attackCooldown > 0) attackCooldown--;
+            if (enemyDist < 1.5 && attackCooldown === 0) {
+                playerHealth -= 10;
+                attackCooldown = 60;
+                createBloodSplash(player.position, 15);
+                document.getElementById('healthFill').style.width = playerHealth + '%';
+                
+                if (playerHealth <= 0) {
+                    gameOver = true;
+                    document.getElementById('gameOver').style.display = 'block';
+                }
+            }
+            
+            // Проверка ловушек
+            traps.forEach(trap => {
+                if (trap.cooldown > 0) {
+                    trap.cooldown--;
+                    return;
+                }
+                
+                const distToTrap = Math.sqrt(
+                    Math.pow(enemy.position.x - trap.x, 2) + 
+                    Math.pow(enemy.position.z - trap.z, 2)
+                );
+                
+                if (distToTrap < 1.5 && !trap.activated) {
+                    trap.activated = true;
+                    trap.cooldown = 180;
+                    
+                    if (trap.type === 'arrow') {
+                        // Стрелы летят во врага
+                        for (let i = 0; i < 5; i++) {
+                            setTimeout(() => {
+                                createArrow(enemy.position);
+                            }, i * 100);
+                        }
+                        enemyHealth -= 30;
+                        createBloodSplash(enemy.position, 20);
+                        
+                        // Анимация плиты
+                        trap.button.position.y = 0.05;
+                        setTimeout(() => {
+                            trap.button.position.y = 0.15;
+                            trap.activated = false;
+                        }, 500);
+                    } else if (trap.type === 'pit') {
+                        // Враг падает в яму
+                        enemy.position.y -= 0.5;
+                        enemyHealth -= 50;
+                        createBloodSplash(enemy.position, 30);
+                        
+                        setTimeout(() => {
+                            enemy.position.y = 0;
+                            trap.activated = false;
+                        }, 1000);
+                    }
+                    
+                    if (enemyHealth <= 0) {
+                        // Враг побеждён - респавн
+                        setTimeout(() => {
+                            enemy.position.set(-15, 0, -10);
+                            enemyHealth = 100;
+                        }, 2000);
+                        enemy.visible = false;
+                    }
+                }
+            });
+            
+            // Обновление стрел
+            for (let i = arrows.length - 1; i >= 0; i--) {
+                const arrow = arrows[i];
+                const dir = new THREE.Vector3().subVectors(arrow.target, arrow.position).normalize();
+                arrow.position.add(dir.multiplyScalar(arrow.speed));
+                arrow.rotation.x = Math.PI / 2;
+                
+                if (arrow.position.distanceTo(arrow.target) < 0.5) {
+                    scene.remove(arrow);
+                    arrows.splice(i, 1);
+                }
+            }
+            
+            // Обновление крови
+            for (let i = bloodParticles.length - 1; i >= 0; i--) {
+                const blood = bloodParticles[i];
+                blood.position.add(blood.velocity);
+                blood.velocity.y -= 0.01;
+                blood.life--;
+                
+                if (blood.life <= 0) {
+                    scene.remove(blood);
+                    bloodParticles.splice(i, 1);
+                }
+            }
+            
+            // Камера
+            camera.position.x += (player.position.x + 20 - camera.position.x) * 0.1;
+            camera.position.z += (player.position.z + 20 - camera.position.z) * 0.1;
+            camera.lookAt(player.position.x, 0, player.position.z);
+            
+            renderer.render(scene, camera);
+        }
+        
+        window.addEventListener('resize', () => {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.left = frustumSize * aspect / -2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = frustumSize / -2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        if ('ontouchstart' in window) {
+            document.getElementById('mobileControls').style.display = 'block';
+        }
+        
+        animate(0);
+    </script>
+</body>
+</html>
